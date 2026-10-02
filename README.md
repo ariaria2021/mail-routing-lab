@@ -22,4 +22,4 @@ npm test
 npm run build
 ```
 
-仕様と今後の拡張方針は [docs/specification.md](docs/specification.md) を参照してください。
+仕様と今後の拡張方針は [docs/specification.md](docs/specification.md)、テストの実行・追加方法は [docs/testing.md](docs/testing.md) を参照してください。
