@@ -19,8 +19,17 @@ export type Mail = {
 export type DeliveryResult = {
   success: boolean
   logs: string[]
+  steps: DeliveryStep[]
   usedServer?: string
   error?: string
+}
+
+export type DeliveryStep = {
+  kind: 'sender' | 'dns-query' | 'mx-attempt' | 'rejected' | 'smtp-accepted' | 'delivered' | 'failed'
+  message: string
+  hostname?: string
+  priority?: number
+  reason?: 'not-found' | 'offline' | 'full'
 }
 
 export function domainOf(address: string): string | null {
@@ -35,29 +44,45 @@ export function deliver(
   servers: Server[],
 ): DeliveryResult {
   const domain = domainOf(recipient)
-  const logs = [`配送開始: ${recipient}`]
-  if (!domain) return { success: false, logs, error: '宛先メールアドレスの形式が正しくありません。' }
-  logs.push(`DNSに ${domain} の MX レコードを問い合わせました。`)
-  if (records.length === 0) return { success: false, logs, error: 'MX レコードが見つかりません。' }
+  const steps: DeliveryStep[] = [{ kind: 'sender', message: `配送開始: ${recipient}` }]
+  const result = (success: boolean, options: Omit<DeliveryResult, 'success' | 'logs' | 'steps'> = {}): DeliveryResult => ({
+    success,
+    steps,
+    logs: steps.map((step) => step.message),
+    ...options,
+  })
+  if (!domain) {
+    const error = '宛先メールアドレスの形式が正しくありません。'
+    steps.push({ kind: 'failed', message: error })
+    return result(false, { error })
+  }
+  steps.push({ kind: 'dns-query', message: `DNSに ${domain} の MX レコードを問い合わせました。` })
+  if (records.length === 0) {
+    const error = 'MX レコードが見つかりません。'
+    steps.push({ kind: 'failed', message: error })
+    return result(false, { error })
+  }
 
   for (const record of [...records].sort((a, b) => a.priority - b.priority)) {
-    logs.push(`優先度 ${record.priority}: ${record.hostname} へ SMTP 接続を試行。`)
+    steps.push({ kind: 'mx-attempt', hostname: record.hostname, priority: record.priority, message: `優先度 ${record.priority}: ${record.hostname} へ SMTP 接続を試行。` })
     const server = servers.find((candidate) => candidate.hostname === record.hostname)
     if (!server) {
-      logs.push(`${record.hostname} は解決できませんでした。`)
+      steps.push({ kind: 'rejected', hostname: record.hostname, reason: 'not-found', message: `${record.hostname} は解決できませんでした。` })
       continue
     }
     if (!server.online) {
-      logs.push(`${record.hostname} は停止中です。次の MX を試します。`)
+      steps.push({ kind: 'rejected', hostname: record.hostname, reason: 'offline', message: `${record.hostname} は停止中です。次の MX を試します。` })
       continue
     }
     if (server.used >= server.capacity) {
-      logs.push(`${record.hostname} のメールボックス容量が不足しています。`)
+      steps.push({ kind: 'rejected', hostname: record.hostname, reason: 'full', message: `${record.hostname} のメールボックス容量が不足しています。` })
       continue
     }
-    logs.push(`SMTP: MAIL FROM → RCPT TO → DATA`)
-    logs.push(`${record.hostname} がメールを受理しました。配送成功。`)
-    return { success: true, logs, usedServer: server.hostname }
+    steps.push({ kind: 'smtp-accepted', hostname: record.hostname, message: 'SMTP: MAIL FROM → RCPT TO → DATA' })
+    steps.push({ kind: 'delivered', hostname: record.hostname, message: `${record.hostname} がメールを受理しました。配送成功。` })
+    return result(true, { usedServer: server.hostname })
   }
-  return { success: false, logs, error: '利用可能な SMTP サーバーがありません。' }
+  const error = '利用可能な SMTP サーバーがありません。'
+  steps.push({ kind: 'failed', message: error })
+  return result(false, { error })
 }

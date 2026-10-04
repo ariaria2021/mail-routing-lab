@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 async function mount() {
   vi.resetModules()
   localStorage.clear()
+  window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
   document.body.innerHTML = '<div id="app"></div>'
   await import('./main')
 }
@@ -20,6 +21,9 @@ describe('ゲーム進行', () => {
     submit('#mx-form')
     submit('#mail-form')
     expect(document.body.textContent).toContain('STAGE CLEAR')
+    expect(document.querySelector('#replay-route')).not.toBeNull()
+    document.querySelector<HTMLButtonElement>('#replay-route')!.click()
+    expect(document.body.textContent).toContain('bob の受信ボックス 1')
 
     document.querySelector<HTMLButtonElement>('#next-stage')!.click()
     document.querySelector<HTMLButtonElement>('[data-toggle="1"]')!.click()

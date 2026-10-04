@@ -21,10 +21,16 @@ describe('deliver', () => {
     ], [online])
     expect(result.success).toBe(true)
     expect(result.usedServer).toBe('mail.example.local')
+    expect(result.steps.map((step) => step.kind)).toEqual([
+      'sender', 'dns-query', 'mx-attempt', 'rejected', 'mx-attempt', 'smtp-accepted', 'delivered',
+    ])
+    expect(result.steps[3]).toMatchObject({ hostname: 'offline.example.local', reason: 'not-found' })
   })
 
   it('容量切れのサーバーを配送先にしない', () => {
     const result = deliver('bob@example.local', [{ priority: 10, hostname: online.hostname }], [{ ...online, used: 5 }])
     expect(result.success).toBe(false)
+    expect(result.steps.at(-2)).toMatchObject({ kind: 'rejected', reason: 'full', hostname: online.hostname })
+    expect(result.steps.at(-1)).toMatchObject({ kind: 'failed' })
   })
 })
