@@ -2,8 +2,8 @@ import './style.css'
 import { deliver, type DeliveryResult, type DeliveryStep, type Mail, type MxRecord, type Server } from './engine'
 import { isStageClear, stageSetup, type StageNumber } from './game'
 
-type GameState = { stage: StageNumber; cleared: boolean; records: MxRecord[]; servers: Server[]; inbox: Mail[]; logs: string[]; lastError?: string; lastDelivery?: DeliveryResult }
 type MailDraft = Pick<Mail, 'from' | 'to' | 'subject' | 'body'>
+type GameState = { stage: StageNumber; cleared: boolean; observedFailure: boolean; records: MxRecord[]; servers: Server[]; inbox: Mail[]; logs: string[]; draft: MailDraft; lastError?: string; lastDelivery?: DeliveryResult }
 type Playback = { result: DeliveryResult; cursor: number; draft?: MailDraft; timer?: ReturnType<typeof setTimeout> }
 
 const storageKey = 'mail-routing-lab-state'
@@ -12,12 +12,14 @@ let playback: Playback | undefined
 
 function newState(stage: StageNumber = 1): GameState {
   const setup = stageSetup(stage)
-  return { stage, cleared: false, records: setup.records, servers: setup.servers, inbox: [], logs: [setup.log] }
+  return { stage, cleared: false, observedFailure: false, records: setup.records, servers: setup.servers, inbox: [], logs: [setup.log], draft: { from: 'alice@post.local', to: 'bob@example.local', subject: '接続テスト', body: 'こんにちは、配送テストです。' } }
 }
 function load(): GameState {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) ?? '') as Partial<GameState>
-    return typeof saved.stage === 'number' && typeof saved.cleared === 'boolean' ? saved as GameState : newState()
+    if (typeof saved.stage !== 'number' || typeof saved.cleared !== 'boolean') return newState()
+    const defaults = newState(saved.stage as StageNumber)
+    return { ...defaults, ...saved, draft: { ...defaults.draft, ...saved.draft } }
   } catch { return newState() }
 }
 let state = load()
@@ -39,35 +41,36 @@ function serverStatus(hostname: string, delivery: DeliveryResult | undefined, cu
   return latest ? stepStatus(latest.step, latest.index, cursor) : 'pending'
 }
 
-function flowNode(label: string, detail: string, status: string) {
-  return `<article class="route-node ${status}"><span class="node-dot"></span><small>${escape(detail)}</small><strong>${escape(label)}</strong></article>`
+function flowNode(label: string, detail: string, status: string, extraClass = '') {
+  return `<article class="route-node ${status} ${extraClass}"><span class="node-dot"></span><small>${escape(detail)}</small><strong>${escape(label)}</strong></article>`
 }
 
 function renderRoute() {
   const delivery = playback?.result ?? state.lastDelivery
   const cursor = playback ? playback.cursor : (delivery ? delivery.steps.length - 1 : -1)
-  const sender = flowNode('alice@post.local', '送信者', stepStatus(delivery?.steps[0], 0, cursor))
+  const sender = flowNode(state.draft.from, '送信者', stepStatus(delivery?.steps[0], 0, cursor))
   const dnsIndex = delivery?.steps.findIndex((step) => step.kind === 'dns-query') ?? -1
   const dns = flowNode('DNS', 'MXを照会', stepStatus(delivery?.steps[dnsIndex], dnsIndex, cursor))
-  const servers = [...state.records].sort((a, b) => a.priority - b.priority).map((record) => flowNode(record.hostname, `MX 優先度 ${record.priority}`, serverStatus(record.hostname, delivery, cursor)))
+  const servers = [...state.records].sort((a, b) => a.priority - b.priority).map((record) => flowNode(record.hostname, `MX 候補・優先度 ${record.priority}`, serverStatus(record.hostname, delivery, cursor), 'route-candidate'))
   const deliveredIndex = delivery?.steps.findIndex((step) => step.kind === 'delivered') ?? -1
   const receiverStatus = delivery && !delivery.success && cursor === delivery.steps.length - 1 ? 'failed' : stepStatus(delivery?.steps[deliveredIndex], deliveredIndex, cursor)
   const receiver = flowNode('bob の受信箱', '受信者', receiverStatus)
   const currentMessage = cursor >= 0 && delivery ? delivery.steps[cursor]?.message : 'メールを送ると、配送経路がここで再生されます。'
-  return `<section class="route-panel" aria-label="配送経路"><div class="route-heading"><div><p class="eyebrow">DELIVERY ROUTE</p><h2>配送経路</h2></div>${delivery && !playback ? '<button class="secondary" id="replay-route">もう一度見る</button>' : ''}</div><div class="route-track">${sender}<span class="route-arrow">→</span>${dns}<span class="route-arrow">→</span>${servers.join('<span class="route-arrow">→</span>')}<span class="route-arrow">→</span>${receiver}</div><p class="route-message" aria-live="polite">${escape(currentMessage ?? '')}</p></section>`
+  return `<section class="route-panel" aria-label="配送経路"><div class="route-heading"><div><p class="eyebrow">DELIVERY ROUTE</p><h2>配送経路</h2></div>${delivery && !playback ? '<button class="secondary" id="replay-route">もう一度見る</button>' : ''}</div><div class="route-legend"><span><i class="pending"></i>未試行</span><span><i class="active"></i>試行中</span><span><i class="failed"></i>失敗</span><span><i class="success"></i>配送完了</span></div><div class="route-track"><div class="route-origin">${sender}<span class="route-arrow">→</span>${dns}</div><div class="route-branch"><small>DNSが返したMX候補（小さい優先度から試行）</small><div class="route-candidates">${servers.join('')}</div></div><span class="route-arrow receiver-arrow">→</span>${receiver}</div><p class="route-message" aria-live="polite">${escape(currentMessage ?? '')}</p><p class="route-note">DNS は配送先の案内役、MX は受信サーバー候補、SMTP はメールを受け渡す会話です。このゲームでは SMTP が受理した時点を配送成功として扱います。</p></section>`
 }
 
 function render() {
   const setup = stageSetup(state.stage)
   const finalClear = state.stage === 3 && state.cleared
   const controlsDisabled = playback ? 'disabled' : ''
+  const missionGuidance = state.observedFailure ? setup.failureHint : setup.firstPrompt
   app.innerHTML = `
     <header><p class="eyebrow">DNS × SMTP simulation game</p><h1>Mail Routing Lab</h1><p class="lede">メールを正しい受信サーバーへ届けよう。</p></header>
     <main>
       <section class="mission ${state.cleared ? 'done' : ''}">
         <span>${state.cleared ? (finalClear ? '★ GAME CLEAR' : '✓ STAGE CLEAR') : setup.title}</span>
         <strong>${state.cleared ? (finalClear ? '3つの障害を解決し、メール配送網を復旧しました。' : `${setup.objective} を達成しました。`) : setup.objective}</strong>
-        <p>${setup.hint}</p>${state.cleared && !finalClear ? '<button id="next-stage">次のミッションへ</button>' : ''}
+        <p>${state.cleared ? setup.takeaway : missionGuidance}</p>${state.cleared ? `<aside class="takeaway"><strong>今回の学び</strong><span>${setup.takeaway}</span>${setup.nextConcept ? `<small>${setup.nextConcept}</small>` : ''}</aside>` : ''}${state.cleared && !finalClear ? '<button id="next-stage">次のミッションへ</button>' : ''}
       </section>
       ${renderRoute()}
       <div class="grid">
@@ -75,7 +78,7 @@ function render() {
           <form id="mx-form" class="stack"><div id="mx-fields">${state.records.map((record, index) => `<div class="mx-row"><label>優先度 <input name="priority-${index}" type="number" min="0" value="${record.priority}" required ${controlsDisabled} /></label><label>配送先ホスト <input name="hostname-${index}" value="${escape(record.hostname)}" required ${controlsDisabled} /></label></div>`).join('')}</div><div class="actions"><button ${controlsDisabled}>MX レコードを保存</button><button type="button" class="secondary" id="add-mx" ${controlsDisabled}>MX を追加</button></div></form>
           <ul class="records">${state.records.map((record) => `<li><b>${record.priority}</b> ${escape(record.hostname)}</li>`).join('')}</ul></section>
         <section class="panel"><h2>SMTP サーバー</h2><div class="servers">${state.servers.map((server, index) => `<article class="server ${server.online ? '' : 'offline'}"><div><strong>${escape(server.hostname)}</strong><small>${server.online ? '稼働中' : '停止中'} · ${server.used}/${server.capacity} 通</small></div><div class="actions"><button class="secondary" data-toggle="${index}" ${controlsDisabled}>${server.online ? '停止' : '起動'}</button><button class="secondary" data-expand="${index}" ${controlsDisabled}>容量 +1</button></div></article>`).join('')}</div></section>
-        <section class="panel compose"><h2>メールを送る</h2><form id="mail-form" class="stack"><label>From <input name="from" type="email" value="alice@post.local" required ${controlsDisabled} /></label><label>To <input name="to" type="email" value="bob@example.local" required ${controlsDisabled} /></label><label>件名 <input name="subject" value="接続テスト" required ${controlsDisabled} /></label><label>本文 <textarea name="body" rows="3" ${controlsDisabled}>こんにちは、配送テストです。</textarea></label><button class="send" ${state.cleared || playback ? 'disabled' : ''}>${playback ? '配送中…' : '配送を開始'}</button></form></section>
+        <section class="panel compose"><h2>メールを送る</h2><form id="mail-form" class="stack"><label>From <input name="from" type="email" value="${escape(state.draft.from)}" required ${controlsDisabled} /></label><label>To <input name="to" type="email" value="${escape(state.draft.to)}" readonly aria-describedby="recipient-note" ${controlsDisabled} /></label><small id="recipient-note">このゲームでは example.local 宛の配送のみを扱います。</small><label>件名 <input name="subject" value="${escape(state.draft.subject)}" required ${controlsDisabled} /></label><label>本文 <textarea name="body" rows="3" ${controlsDisabled}>${escape(state.draft.body)}</textarea></label><button class="send" ${state.cleared || playback ? 'disabled' : ''}>${playback ? '配送中…' : '配送を開始'}</button></form></section>
         <section class="panel"><h2>配送ログ</h2>${state.lastError ? `<p class="error">失敗: ${escape(state.lastError)}</p>` : ''}<ol class="logs">${state.logs.map((log) => `<li>${escape(log)}</li>`).join('')}</ol></section>
         <section class="panel inbox"><h2>bob の受信ボックス <span>${state.inbox.length}</span></h2>${state.inbox.length ? state.inbox.map((mail) => `<article><strong>${escape(mail.subject)}</strong><small>${escape(mail.from)} → ${escape(mail.to)}</small><p>${escape(mail.body)}</p></article>`).join('') : '<p class="hint">まだメールはありません。</p>'}</section>
       </div>
@@ -93,6 +96,7 @@ function completePlayback() {
     state.lastDelivery = result
     state.logs = result.logs
     state.lastError = result.error
+    if (!result.success) state.observedFailure = true
     if (result.success && result.usedServer) {
       state.servers.find((server) => server.hostname === result.usedServer)!.used += 1
       state.inbox.unshift({ id: crypto.randomUUID(), ...draft, deliveredAt: new Date().toISOString() })
@@ -133,7 +137,12 @@ function bindEvents() {
   document.querySelector<HTMLFormElement>('#mail-form')!.addEventListener('submit', (event) => {
     event.preventDefault(); const data = new FormData(event.currentTarget as HTMLFormElement)
     const draft: MailDraft = { from: String(data.get('from')), to: String(data.get('to')).trim().toLowerCase(), subject: String(data.get('subject')), body: String(data.get('body')) }
+    state.draft = draft
     startPlayback(deliver(draft.to, state.records, state.servers), draft)
+  })
+  document.querySelector<HTMLFormElement>('#mail-form')!.addEventListener('input', (event) => {
+    const field = event.target as HTMLInputElement | HTMLTextAreaElement
+    if (field.name === 'from' || field.name === 'to' || field.name === 'subject' || field.name === 'body') state.draft = { ...state.draft, [field.name]: field.value }
   })
   document.querySelector<HTMLButtonElement>('#replay-route')?.addEventListener('click', () => { if (state.lastDelivery) startPlayback(state.lastDelivery) })
   document.querySelector<HTMLButtonElement>('#next-stage')?.addEventListener('click', () => { state = newState((state.stage + 1) as StageNumber); save(); render() })

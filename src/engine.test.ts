@@ -33,4 +33,17 @@ describe('deliver', () => {
     expect(result.steps.at(-2)).toMatchObject({ kind: 'rejected', reason: 'full', hostname: online.hostname })
     expect(result.steps.at(-1)).toMatchObject({ kind: 'failed' })
   })
+
+  it('メールボックス容量不足では予備 MX へ切り替えず、再送を求める', () => {
+    const result = deliver('bob@example.local', [
+      { priority: 10, hostname: 'mail.example.local' },
+      { priority: 20, hostname: 'backup.example.local' },
+    ], [
+      { ...online, used: 5 },
+      { hostname: 'backup.example.local', online: true, capacity: 5, used: 0 },
+    ])
+    expect(result.success).toBe(false)
+    expect(result.steps.some((step) => step.hostname === 'backup.example.local')).toBe(false)
+    expect(result.error).toContain('再送')
+  })
 })

@@ -76,7 +76,9 @@ export function deliver(
     }
     if (server.used >= server.capacity) {
       steps.push({ kind: 'rejected', hostname: record.hostname, reason: 'full', message: `${record.hostname} のメールボックス容量が不足しています。` })
-      continue
+      const error = '受信者のメールボックスが満杯です。容量を増やしてから再送してください。'
+      steps.push({ kind: 'failed', message: error })
+      return result(false, { error })
     }
     steps.push({ kind: 'smtp-accepted', hostname: record.hostname, message: 'SMTP: MAIL FROM → RCPT TO → DATA' })
     steps.push({ kind: 'delivered', hostname: record.hostname, message: `${record.hostname} がメールを受理しました。配送成功。` })
