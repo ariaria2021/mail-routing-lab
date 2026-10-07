@@ -46,4 +46,17 @@ describe('deliver', () => {
     expect(result.steps.some((step) => step.hostname === 'backup.example.local')).toBe(false)
     expect(result.error).toContain('再送')
   })
+
+  it('SPF を通過すると認証済みとして受信箱へ配送する', () => {
+    const result = deliver('bob@example.local', [{ priority: 10, hostname: online.hostname }], [online], { spfAuthorized: true, dkimSigningEnabled: false, dmarcPolicy: 'reject' })
+    expect(result.success).toBe(true)
+    expect(result.authentication).toMatchObject({ spf: 'pass', dkim: 'fail', dmarc: 'pass', destination: 'inbox' })
+  })
+
+  it('DMARC quarantine は認証失敗メールを迷惑メール箱へ隔離する', () => {
+    const result = deliver('bob@example.local', [{ priority: 10, hostname: online.hostname }], [online], { spfAuthorized: false, dkimSigningEnabled: false, dmarcPolicy: 'quarantine' })
+    expect(result.success).toBe(true)
+    expect(result.destination).toBe('spam')
+    expect(result.steps.at(-1)).toMatchObject({ kind: 'quarantined' })
+  })
 })

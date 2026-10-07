@@ -15,7 +15,7 @@ function submit(selector: string) {
 describe('ゲーム進行', () => {
   beforeEach(async () => { await mount() })
 
-  it('3つのミッションを操作してゲームクリアできる', () => {
+  it('6つのミッションを操作してゲームクリアできる', () => {
     expect(document.body.textContent).toContain('どこで止まるか観察しよう')
     submit('#mail-form')
     expect(document.body.textContent).toContain('DNS Zoneの配送先を稼働中のサーバーへ直そう')
@@ -41,7 +41,29 @@ describe('ゲーム進行', () => {
     expect(document.body.textContent).toContain('容量を増やしてから、同じ宛先へ再送')
     document.querySelector<HTMLButtonElement>('[data-expand="0"]')!.click()
     submit('#mail-form')
-    expect(document.body.textContent).toContain('GAME CLEAR')
+    expect(document.body.textContent).toContain('STAGE CLEAR')
     expect(document.body.textContent).toContain('mail.example.local がメールを受理しました。配送成功。')
+
+    document.querySelector<HTMLButtonElement>('#next-stage')!.click()
+    submit('#mail-form')
+    expect(document.body.textContent).toContain('SPF カードで、この送信サーバーを')
+    document.querySelector<HTMLButtonElement>('[data-auth="spf"]')!.click()
+    submit('#mail-form')
+    expect(document.body.textContent).toContain('STAGE CLEAR')
+
+    document.querySelector<HTMLButtonElement>('#next-stage')!.click()
+    submit('#mail-form')
+    expect(document.body.textContent).toContain('DKIM カードで署名鍵を有効化')
+    document.querySelector<HTMLButtonElement>('[data-auth="dkim"]')!.click()
+    submit('#mail-form')
+    expect(document.body.textContent).toContain('STAGE CLEAR')
+
+    document.querySelector<HTMLButtonElement>('#next-stage')!.click()
+    submit('#mail-form')
+    expect(document.body.textContent).toContain('DMARC カードで quarantine を選び')
+    document.querySelector<HTMLButtonElement>('[data-policy="quarantine"]')!.click()
+    submit('#mail-form')
+    expect(document.body.textContent).toContain('GAME CLEAR')
+    expect(document.body.textContent).toContain('迷惑メール箱 1')
   })
 })

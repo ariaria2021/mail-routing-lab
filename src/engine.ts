@@ -14,6 +14,20 @@ export type Mail = {
   subject: string
   body: string
   deliveredAt: string
+  folder: 'inbox' | 'spam'
+}
+
+export type AuthConfig = {
+  spfAuthorized: boolean
+  dkimSigningEnabled: boolean
+  dmarcPolicy: 'none' | 'quarantine' | 'reject'
+}
+
+export type AuthenticationResult = {
+  spf: 'pass' | 'fail'
+  dkim: 'pass' | 'fail'
+  dmarc: 'pass' | 'fail'
+  destination: 'inbox' | 'spam'
 }
 
 export type DeliveryResult = {
@@ -22,10 +36,12 @@ export type DeliveryResult = {
   steps: DeliveryStep[]
   usedServer?: string
   error?: string
+  authentication?: AuthenticationResult
+  destination?: 'inbox' | 'spam'
 }
 
 export type DeliveryStep = {
-  kind: 'sender' | 'dns-query' | 'mx-attempt' | 'rejected' | 'smtp-accepted' | 'delivered' | 'failed'
+  kind: 'sender' | 'dns-query' | 'mx-attempt' | 'rejected' | 'smtp-accepted' | 'auth-spf' | 'auth-dkim' | 'auth-dmarc' | 'quarantined' | 'delivered' | 'failed'
   message: string
   hostname?: string
   priority?: number
@@ -42,6 +58,7 @@ export function deliver(
   recipient: string,
   records: MxRecord[],
   servers: Server[],
+  authConfig?: AuthConfig,
 ): DeliveryResult {
   const domain = domainOf(recipient)
   const steps: DeliveryStep[] = [{ kind: 'sender', message: `配送開始: ${recipient}` }]
@@ -81,8 +98,29 @@ export function deliver(
       return result(false, { error })
     }
     steps.push({ kind: 'smtp-accepted', hostname: record.hostname, message: 'SMTP: MAIL FROM → RCPT TO → DATA' })
+    if (authConfig) {
+      const spf = authConfig.spfAuthorized ? 'pass' : 'fail'
+      const dkim = authConfig.dkimSigningEnabled ? 'pass' : 'fail'
+      const dmarc = spf === 'pass' || dkim === 'pass' ? 'pass' : 'fail'
+      steps.push({ kind: 'auth-spf', message: `SPF: ${spf === 'pass' ? '送信サーバーを許可しました。' : '送信サーバーが許可されていません。'}` })
+      steps.push({ kind: 'auth-dkim', message: `DKIM: ${dkim === 'pass' ? '署名を検証できました。' : '有効な署名を検証できません。'}` })
+      steps.push({ kind: 'auth-dmarc', message: `DMARC: ${dmarc === 'pass' ? 'SPF または DKIM が成功しました。' : `認証に失敗し、ポリシー ${authConfig.dmarcPolicy} を適用します。`}` })
+      const authentication: AuthenticationResult = { spf, dkim, dmarc, destination: 'inbox' }
+      if (dmarc === 'fail' && authConfig.dmarcPolicy === 'reject') {
+        const error = 'DMARC ポリシーによりメールを拒否しました。'
+        steps.push({ kind: 'failed', message: error })
+        return result(false, { error, authentication })
+      }
+      if (dmarc === 'fail' && authConfig.dmarcPolicy === 'quarantine') {
+        authentication.destination = 'spam'
+        steps.push({ kind: 'quarantined', message: 'DMARC により迷惑メール箱へ隔離しました。' })
+        return result(true, { usedServer: server.hostname, authentication, destination: 'spam' })
+      }
+      steps.push({ kind: 'delivered', hostname: record.hostname, message: `${record.hostname} がメールを受理しました。配送成功。` })
+      return result(true, { usedServer: server.hostname, authentication, destination: 'inbox' })
+    }
     steps.push({ kind: 'delivered', hostname: record.hostname, message: `${record.hostname} がメールを受理しました。配送成功。` })
-    return result(true, { usedServer: server.hostname })
+    return result(true, { usedServer: server.hostname, destination: 'inbox' })
   }
   const error = '利用可能な SMTP サーバーがありません。'
   steps.push({ kind: 'failed', message: error })

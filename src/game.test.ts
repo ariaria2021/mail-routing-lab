@@ -10,8 +10,14 @@ describe('stageSetup', () => {
     expect(stageSetup(2).servers[0].online).toBe(false)
   })
 
-  it('各ステージは指定された受信サーバーへの配送でのみクリアになる', () => {
-    expect(isStageClear(2, 'mail.example.local')).toBe(false)
-    expect(isStageClear(2, 'backup.example.local')).toBe(true)
+  it('各ステージは指定された受信サーバーと配信先でのみクリアになる', () => {
+    expect(isStageClear(2, { success: true, usedServer: 'mail.example.local', destination: 'inbox', logs: [], steps: [] })).toBe(false)
+    expect(isStageClear(2, { success: true, usedServer: 'backup.example.local', destination: 'inbox', logs: [], steps: [] })).toBe(true)
+  })
+
+  it('認証ステージは SPF・DKIM・DMARC を順に扱う', () => {
+    expect(stageSetup(4).authFocus).toBe('spf')
+    expect(stageSetup(5).authFocus).toBe('dkim')
+    expect(stageSetup(6).expectedDestination).toBe('spam')
   })
 })
